@@ -32,10 +32,12 @@ import torchsummary
 def extract_feature_pipeline(args):
     # ============ preparing data ... ============
     transform = pth_transforms.Compose([
-        pth_transforms.Resize(256, interpolation=3),
-        pth_transforms.CenterCrop(224),
+        pth_transforms.Resize((args.global_size,args.global_size), interpolation=pth_transforms.InterpolationMode.BICUBIC),
+        #pth_transforms.CenterCrop(224),
         pth_transforms.ToTensor(),
-        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        #pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        # BBBC021 normalization
+        pth_transforms.Normalize((0.168, 0.137, 0.096), (0.175, 0.159, 0.168)),
     ])
     dataset = ReturnIndexDataset(args.data_path, transform=transform)
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=False)
@@ -66,11 +68,6 @@ def extract_feature_pipeline(args):
     utils.load_pretrained_weights(model, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
     model.eval()
 
-    print(model)
-    torchsummary.summary(model, (3,256,256))
-    import sys
-    sys.exit(0)
-    
     # ============ extract features ... ============
     print("Extracting features for dataset...")
     features = extract_features(model, data_loader, args.use_cuda)
@@ -128,49 +125,6 @@ def extract_features(model, data_loader, use_cuda=True, multiscale=False):
     return features
 
 
-@torch.no_grad()
-def knn_classifier(train_features, train_labels, test_features, test_labels, k, T, num_classes=1000):
-    top1, top5, total = 0.0, 0.0, 0
-    train_features = train_features.t()
-    num_test_images, num_chunks = test_labels.shape[0], 100
-    imgs_per_chunk = num_test_images // num_chunks
-    retrieval_one_hot = torch.zeros(k, num_classes).to(train_features.device)
-    for idx in range(0, num_test_images, imgs_per_chunk):
-        # get the features for test images
-        features = test_features[
-            idx : min((idx + imgs_per_chunk), num_test_images), :
-        ]
-        targets = test_labels[idx : min((idx + imgs_per_chunk), num_test_images)]
-        batch_size = targets.shape[0]
-
-        # calculate the dot product and compute top-k neighbors
-        similarity = torch.mm(features, train_features)
-        distances, indices = similarity.topk(k, largest=True, sorted=True)
-        candidates = train_labels.view(1, -1).expand(batch_size, -1)
-        retrieved_neighbors = torch.gather(candidates, 1, indices)
-
-        retrieval_one_hot.resize_(batch_size * k, num_classes).zero_()
-        retrieval_one_hot.scatter_(1, retrieved_neighbors.view(-1, 1), 1)
-        distances_transform = distances.clone().div_(T).exp_()
-        probs = torch.sum(
-            torch.mul(
-                retrieval_one_hot.view(batch_size, -1, num_classes),
-                distances_transform.view(batch_size, -1, 1),
-            ),
-            1,
-        )
-        _, predictions = probs.sort(1, True)
-
-        # find the predictions that match the target
-        correct = predictions.eq(targets.data.view(-1, 1))
-        top1 = top1 + correct.narrow(1, 0, 1).sum().item()
-        top5 = top5 + correct.narrow(1, 0, min(5, k)).sum().item()  # top5 does not make sense if k < 5
-        total += targets.size(0)
-    top1 = top1 * 100.0 / total
-    top5 = top5 * 100.0 / total
-    return top1, top5
-
-
 class ReturnIndexDataset(datasets.ImageFolder):
     def __getitem__(self, idx):
         img, lab = super(ReturnIndexDataset, self).__getitem__(idx)
@@ -178,12 +132,8 @@ class ReturnIndexDataset(datasets.ImageFolder):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Evaluation with weighted k-NN on ImageNet')
+    parser = argparse.ArgumentParser('Extract features from images using pretrained ViT')
     parser.add_argument('--batch_size_per_gpu', default=128, type=int, help='Per-GPU batch-size')
-    parser.add_argument('--nb_knn', default=[10, 20, 100, 200], nargs='+', type=int,
-        help='Number of NN to use. 20 is usually working the best.')
-    parser.add_argument('--temperature', default=0.07, type=float,
-        help='Temperature used in the voting coefficient')
     parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--use_cuda', default=True, type=utils.bool_flag,
         help="Should we store the features on GPU? We recommend setting this to False if you encounter OOM")
@@ -193,13 +143,12 @@ if __name__ == '__main__':
         help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--dump_features', default=None,
         help='Path where to save computed features, empty for no saving')
-    parser.add_argument('--load_features', default=None, help="""If the features have
-        already been computed, where to find them.""")
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
+    parser.add_argument('--data_path', default='/path/to/imagenet/', type=str)
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    parser.add_argument('--data_path', default='/path/to/imagenet/', type=str)
+    parser.add_argument("--global_size", default=256, type=int, help="Size of the image as input to the model")
     args = parser.parse_args()
 
     utils.init_distributed_mode(args)
@@ -207,14 +156,7 @@ if __name__ == '__main__':
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
 
-    if args.load_features:
-        train_features = torch.load(os.path.join(args.load_features, "trainfeat.pth"))
-        test_features = torch.load(os.path.join(args.load_features, "testfeat.pth"))
-        train_labels = torch.load(os.path.join(args.load_features, "trainlabels.pth"))
-        test_labels = torch.load(os.path.join(args.load_features, "testlabels.pth"))
-    else:
-        # need to extract features !
-        features = extract_feature_pipeline(args)
+    features = extract_feature_pipeline(args)
 
     print(features.shape)
     np.save(os.path.join(args.dump_features, "feat.npy"), features.cpu().detach().numpy())

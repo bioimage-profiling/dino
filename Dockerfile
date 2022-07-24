@@ -11,7 +11,7 @@ RUN apt update \
 RUN apt install -y --no-install-recommends git
 
 # Install required Python libraries
-RUN python -m pip install torch torchvision --pre --extra-index-url https://download.pytorch.org/whl/nightly/cu116
+RUN python -m pip install torch torchvision torchsummary --pre --extra-index-url https://download.pytorch.org/whl/nightly/cu116
 
 RUN python -m pip install timm
 
@@ -20,4 +20,4 @@ RUN mkdir /src && \
     cd /src && \
     git clone https://github.com/bioimage-profiling/dino.git
 
-ENTRYPOINT ["python /src/dino/main_dino.py"]
+ENTRYPOINT ["python", "/src/dino/main_dino.py"]
