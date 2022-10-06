@@ -76,7 +76,8 @@ def display_instances(image, mask, fname="test", figsize=(5, 5), blur=False, con
         _mask = mask[i]
         if blur:
             _mask = cv2.blur(_mask,(10,10))
-        # Mask
+        # Mask export
+        skimage.io.imsave(fname, (_mask*255).astype(np.uint8))
         masked_image = apply_mask(masked_image, _mask, color, alpha)
         # Mask Polygon
         # Pad to ensure proper polygons for masks that touch image edges.
@@ -90,7 +91,7 @@ def display_instances(image, mask, fname="test", figsize=(5, 5), blur=False, con
                 p = Polygon(verts, facecolor="none", edgecolor=color)
                 ax.add_patch(p)
     ax.imshow(masked_image.astype(np.uint8), aspect='auto')
-    fig.savefig(fname)
+    #fig.savefig(fname)
     print(f"{fname} saved.")
     return
 
@@ -165,7 +166,8 @@ if __name__ == '__main__':
     transform = pth_transforms.Compose([
         pth_transforms.Resize(args.image_size),
         pth_transforms.ToTensor(),
-        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        #pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        pth_transforms.Normalize((0.288, 0.288, 0.288), (0.251, 0.251, 0.251)),
     ])
     img = transform(img)
 
@@ -197,7 +199,8 @@ if __name__ == '__main__':
         th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
 
     attentions = attentions.reshape(nh, w_featmap, h_featmap)
-    attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+    #attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+    attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="bicubic")[0].cpu().numpy()
 
     # save attentions heatmaps
     os.makedirs(args.output_dir, exist_ok=True)
@@ -208,6 +211,6 @@ if __name__ == '__main__':
         print(f"{fname} saved.")
 
     if args.threshold is not None:
-        image = skimage.io.imread(os.path.join(args.output_dir, "img.png"))
+        image = skimage.io.imread(os.path.join(args.output_dir, os.path.basename(args.image_path)+"_img.png"))
         for j in range(nh):
-            display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) +".png"), blur=False)
+            display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) +".png"), blur=True)
